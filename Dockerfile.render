@@ -155,41 +155,27 @@ redirect_stderr=true\n\
 
 WORKDIR /var/www
 
-# Create a .env template - with fixed environment variable handling
-RUN echo "#!/bin/bash\n\
-\n\
-# Default values for environment variables\n\
-DEFAULT_APP_DEBUG=false\n\
-DEFAULT_REQUIRE_HTTPS=true\n\
-DEFAULT_PDF_GENERATOR=snappdf\n\
-DEFAULT_CACHE_DRIVER=file\n\
-DEFAULT_QUEUE_CONNECTION=sync\n\
-DEFAULT_SESSION_DRIVER=file\n\
-DEFAULT_REDIS_HOST=redis\n\
-DEFAULT_REDIS_PASSWORD=null\n\
-DEFAULT_REDIS_PORT=6379\n\
-DEFAULT_MAIL_MAILER=log\n\
-DEFAULT_MAIL_FROM_ADDRESS=user@example.com\n\
-DEFAULT_MAIL_FROM_NAME=\"Invoice Ninja User\"\n\
+# Create a .env template - with much simpler environment variable handling
+RUN echo '#!/bin/bash\n\
 \n\
 # Create .env file with environment variables or defaults\n\
 cat > /var/www/html/.env << EOL\n\
 APP_URL=${APP_URL}\n\
 APP_KEY=${APP_KEY}\n\
 APP_ENV=production\n\
-APP_DEBUG=${APP_DEBUG:-\$DEFAULT_APP_DEBUG}\n\
-REQUIRE_HTTPS=${REQUIRE_HTTPS:-\$DEFAULT_REQUIRE_HTTPS}\n\
+APP_DEBUG=${APP_DEBUG:-false}\n\
+REQUIRE_HTTPS=${REQUIRE_HTTPS:-true}\n\
 PHANTOMJS_PDF_GENERATION=false\n\
-PDF_GENERATOR=${PDF_GENERATOR:-\$DEFAULT_PDF_GENERATOR}\n\
+PDF_GENERATOR=${PDF_GENERATOR:-snappdf}\n\
 TRUSTED_PROXIES=*\n\
 \n\
-CACHE_DRIVER=${CACHE_DRIVER:-\$DEFAULT_CACHE_DRIVER}\n\
-QUEUE_CONNECTION=${QUEUE_CONNECTION:-\$DEFAULT_QUEUE_CONNECTION}\n\
-SESSION_DRIVER=${SESSION_DRIVER:-\$DEFAULT_SESSION_DRIVER}\n\
+CACHE_DRIVER=${CACHE_DRIVER:-file}\n\
+QUEUE_CONNECTION=${QUEUE_CONNECTION:-sync}\n\
+SESSION_DRIVER=${SESSION_DRIVER:-file}\n\
 \n\
-REDIS_HOST=${REDIS_HOST:-\$DEFAULT_REDIS_HOST}\n\
-REDIS_PASSWORD=${REDIS_PASSWORD:-\$DEFAULT_REDIS_PASSWORD}\n\
-REDIS_PORT=${REDIS_PORT:-\$DEFAULT_REDIS_PORT}\n\
+REDIS_HOST=${REDIS_HOST:-redis}\n\
+REDIS_PASSWORD=${REDIS_PASSWORD:-null}\n\
+REDIS_PORT=${REDIS_PORT:-6379}\n\
 \n\
 FILESYSTEM_DISK=local\n\
 \n\
@@ -203,18 +189,18 @@ DB_PASSWORD=${DB_PASSWORD}\n\
 IN_USER_EMAIL=${IN_USER_EMAIL}\n\
 IN_PASSWORD=${IN_PASSWORD}\n\
 \n\
-MAIL_MAILER=${MAIL_MAILER:-\$DEFAULT_MAIL_MAILER}\n\
+MAIL_MAILER=${MAIL_MAILER:-log}\n\
 MAIL_HOST=${MAIL_HOST}\n\
 MAIL_PORT=${MAIL_PORT}\n\
 MAIL_USERNAME=${MAIL_USERNAME}\n\
 MAIL_PASSWORD=${MAIL_PASSWORD}\n\
 MAIL_ENCRYPTION=${MAIL_ENCRYPTION}\n\
-MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS:-\$DEFAULT_MAIL_FROM_ADDRESS}\n\
-MAIL_FROM_NAME=\"${MAIL_FROM_NAME:-\$DEFAULT_MAIL_FROM_NAME}\"\n\
+MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS:-user@example.com}\n\
+MAIL_FROM_NAME=${MAIL_FROM_NAME:-Invoice Ninja User}\n\
 \n\
 IS_DOCKER=true\n\
 SCOUT_DRIVER=null\n\
-EOL\n" > /var/www/generate-env.sh
+EOL\n' > /var/www/generate-env.sh
 RUN chmod +x /var/www/generate-env.sh
 
 # Download and setup InvoiceNinja
