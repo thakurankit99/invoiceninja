@@ -1,0 +1,334 @@
+FROM php:8.3-fpm
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nginx \
+    mariadb-client \
+    supervisor \
+    curl \
+    gpg \
+    # Unicode support for PDF
+    fonts-noto-cjk-extra \
+    fonts-wqy-microhei \
+    fonts-wqy-zenhei \
+    xfonts-wqy \
+    # Install Chrome for PDF generation
+    && if [ "$(dpkg --print-architecture)" = "amd64" ]; then \
+    mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://dl.google.com/linux/linux_signing_key.pub | \
+    gpg --dearmor -o /etc/apt/keyrings/google.gpg \
+    && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/google.gpg] https://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends google-chrome-stable; \
+    elif [ "$(dpkg --print-architecture)" = "arm64" ]; then \
+    apt-get install -y --no-install-recommends \
+    chromium; \        
+    fi \
+    # Create config directory for chrome
+    && mkdir /var/www/.config \
+    && chown www-data:www-data /var/www/.config \
+    # Cleanup
+    && apt-get purge -y gpg \
+    && apt-get autoremove -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PHP extensions
+COPY --from=ghcr.io/mlocati/php-extension-installer /usr/bin/install-php-extensions /usr/local/bin/
+
+RUN install-php-extensions \
+    bcmath \
+    gd \
+    mbstring \
+    pdo_mysql \
+    pdo_pgsql \
+    zip \
+    exif \
+    imagick \
+    intl \
+    pcntl \
+    saxon \
+    soap \
+    opcache \
+    redis
+
+# Configure PHP
+RUN ln -s "$PHP_INI_DIR/php.ini-production" "$PHP_INI_DIR/php.ini"
+
+# Add PHP configuration - reduced memory usage for Render free tier
+RUN echo "\
+[core]\n\
+post_max_size=10M\n\
+upload_max_filesize=10M\n\
+memory_limit=256M\n\
+\n\
+[opcache]\n\
+opcache.enable_cli=1\n\
+\n\
+[jit]\n\
+opcache.jit=tracing\n\
+opcache.jit_buffer_size=32M\n\
+\n\
+[extra]\n\
+opcache.memory_consumption=64\n\
+opcache.max_accelerated_files=5000\n\
+opcache.validate_timestamps=1\n\
+realpath_cache_size=2048K\n\
+realpath_cache_ttl=600\n\
+" > /usr/local/etc/php/conf.d/invoiceninja.ini
+
+# Configure Nginx
+RUN mkdir -p /run/nginx
+RUN echo "\
+server {\n\
+    listen \${PORT:-8080};\n\
+    server_name _;\n\
+    root /var/www/html/public;\n\
+\n\
+    add_header X-Frame-Options \"SAMEORIGIN\";\n\
+    add_header X-Content-Type-Options \"nosniff\";\n\
+\n\
+    index index.php;\n\
+    charset utf-8;\n\
+\n\
+    location / {\n\
+        try_files \$uri \$uri/ /index.php?\$query_string;\n\
+    }\n\
+\n\
+    location = /favicon.ico { access_log off; log_not_found off; }\n\
+    location = /robots.txt  { access_log off; log_not_found off; }\n\
+\n\
+    error_page 404 /index.php;\n\
+\n\
+    location ~ \\.php$ {\n\
+        fastcgi_pass 127.0.0.1:9000;\n\
+        fastcgi_param SCRIPT_FILENAME \$realpath_root\$fastcgi_script_name;\n\
+        include fastcgi_params;\n\
+    }\n\
+\n\
+    location ~ /\\.(?!well-known).* {\n\
+        deny all;\n\
+    }\n\
+\n\
+    client_max_body_size 10M;\n\
+}\n\
+" > /etc/nginx/sites-available/default
+
+# Configure Supervisor (simplified for single container)
+RUN echo "\
+[supervisord]\n\
+nodaemon=true\n\
+user=root\n\
+logfile=/dev/stdout\n\
+logfile_maxbytes=0\n\
+pidfile=/var/run/supervisord.pid\n\
+\n\
+[program:nginx]\n\
+command=/usr/sbin/nginx -g 'daemon off;'\n\
+autostart=true\n\
+autorestart=true\n\
+priority=10\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+redirect_stderr=true\n\
+\n\
+[program:php-fpm]\n\
+command=/usr/local/sbin/php-fpm -F\n\
+autostart=true\n\
+autorestart=true\n\
+priority=5\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+redirect_stderr=true\n\
+\n\
+[program:queue-worker]\n\
+command=php /var/www/html/artisan queue:work --sleep=3 --tries=3 --max-time=3600\n\
+autostart=%(ENV_QUEUE_WORKER_ENABLED)s\n\
+autorestart=true\n\
+user=www-data\n\
+numprocs=1\n\
+environment=HOME='/var/www'\n\
+stdout_logfile=/dev/stdout\n\
+stdout_logfile_maxbytes=0\n\
+redirect_stderr=true\n\
+" > /etc/supervisor/conf.d/supervisord.conf
+
+WORKDIR /var/www
+
+# Create a .env template - this will be modified at runtime
+RUN echo "\
+APP_URL=\${APP_URL}\n\
+APP_KEY=\${APP_KEY}\n\
+APP_ENV=production\n\
+APP_DEBUG=\${APP_DEBUG:-false}\n\
+REQUIRE_HTTPS=\${REQUIRE_HTTPS:-true}\n\
+PHANTOMJS_PDF_GENERATION=false\n\
+PDF_GENERATOR=\${PDF_GENERATOR:-snappdf}\n\
+TRUSTED_PROXIES=*\n\
+\n\
+CACHE_DRIVER=\${CACHE_DRIVER:-file}\n\
+QUEUE_CONNECTION=\${QUEUE_CONNECTION:-sync}\n\
+SESSION_DRIVER=\${SESSION_DRIVER:-file}\n\
+\n\
+REDIS_HOST=\${REDIS_HOST:-redis}\n\
+REDIS_PASSWORD=\${REDIS_PASSWORD:-null}\n\
+REDIS_PORT=\${REDIS_PORT:-6379}\n\
+\n\
+FILESYSTEM_DISK=local\n\
+\n\
+# Extract database details from DATABASE_URL if provided\n\
+DB_CONNECTION=\${DB_CONNECTION}\n\
+DB_HOST=\${DB_HOST}\n\
+DB_PORT=\${DB_PORT}\n\
+DB_DATABASE=\${DB_DATABASE}\n\
+DB_USERNAME=\${DB_USERNAME}\n\
+DB_PASSWORD=\${DB_PASSWORD}\n\
+\n\
+# Create initial user\n\
+IN_USER_EMAIL=\${IN_USER_EMAIL}\n\
+IN_PASSWORD=\${IN_PASSWORD}\n\
+\n\
+# Mail options\n\
+MAIL_MAILER=\${MAIL_MAILER:-log}\n\
+MAIL_HOST=\${MAIL_HOST}\n\
+MAIL_PORT=\${MAIL_PORT}\n\
+MAIL_USERNAME=\${MAIL_USERNAME}\n\
+MAIL_PASSWORD=\${MAIL_PASSWORD}\n\
+MAIL_ENCRYPTION=\${MAIL_ENCRYPTION}\n\
+MAIL_FROM_ADDRESS=\${MAIL_FROM_ADDRESS:-'user@example.com'}\n\
+MAIL_FROM_NAME=\${MAIL_FROM_NAME:-'Invoice Ninja User'}\n\
+\n\
+IS_DOCKER=true\n\
+SCOUT_DRIVER=null\n\
+" > /var/www/.env.template
+
+# Download and setup InvoiceNinja
+USER www-data
+RUN curl -sL "https://github.com/invoiceninja/invoiceninja/releases/latest/download/invoiceninja.tar.gz" | \
+    tar -xz -C /var/www/html \
+    && ln -s /var/www/html/resources/views/react/index.blade.php /var/www/html/public/index.html
+
+USER root
+
+# Setup initialization script
+RUN echo '#!/bin/sh -eu\n\
+\n\
+# Set PDF generation browser path based on architecture\n\
+if [ "$(dpkg --print-architecture)" = "amd64" ]; then\n\
+    export SNAPPDF_CHROMIUM_PATH=/usr/bin/google-chrome-stable\n\
+elif [ "$(dpkg --print-architecture)" = "arm64" ]; then\n\
+    export SNAPPDF_CHROMIUM_PATH=/usr/bin/chromium\n\
+fi\n\
+\n\
+# Generate .env file from template and environment variables\n\
+envsubst < /var/www/.env.template > /var/www/html/.env\n\
+\n\
+# Parse DATABASE_URL if provided and update .env with components\n\
+if [ -n "${DATABASE_URL:-}" ]; then\n\
+    echo "Processing DATABASE_URL..."\n\
+    # Extract database type (mysql or postgres)\n\
+    DB_TYPE=$(echo $DATABASE_URL | cut -d ":" -f 1)\n\
+    if [ "$DB_TYPE" = "mysql" ]; then\n\
+        echo "DB_CONNECTION=mysql" >> /var/www/html/.env\n\
+    elif [ "$DB_TYPE" = "postgresql" ]; then\n\
+        echo "DB_CONNECTION=pgsql" >> /var/www/html/.env\n\
+    fi\n\
+    \n\
+    # Extract host and port\n\
+    DB_HOST_PORT=$(echo $DATABASE_URL | grep -oP "(?<=://).*?(?=@)" | cut -d ":" -f 2)\n\
+    DB_HOST=$(echo $DATABASE_URL | grep -oP "(?<=@).*?(?=:)" || echo $DATABASE_URL | grep -oP "(?<=@).*?(?=/)")\n\
+    DB_PORT=$(echo $DATABASE_URL | grep -oP "(?<=@$DB_HOST:)\\d+" || echo "")\n\
+    if [ -n "$DB_HOST" ]; then\n\
+        echo "DB_HOST=$DB_HOST" >> /var/www/html/.env\n\
+    fi\n\
+    if [ -n "$DB_PORT" ]; then\n\
+        echo "DB_PORT=$DB_PORT" >> /var/www/html/.env\n\
+    else\n\
+        if [ "$DB_TYPE" = "mysql" ]; then\n\
+            echo "DB_PORT=3306" >> /var/www/html/.env\n\
+        elif [ "$DB_TYPE" = "postgresql" ]; then\n\
+            echo "DB_PORT=5432" >> /var/www/html/.env\n\
+        fi\n\
+    fi\n\
+    \n\
+    # Extract username and password\n\
+    DB_USERPASS=$(echo $DATABASE_URL | grep -oP "(?<=://).*?(?=@)")\n\
+    DB_USERNAME=$(echo $DB_USERPASS | grep -oP "^.*?(?=:)" || echo "")\n\
+    DB_PASSWORD=$(echo $DB_USERPASS | grep -oP "(?<=:).*$" || echo "")\n\
+    if [ -n "$DB_USERNAME" ]; then\n\
+        echo "DB_USERNAME=$DB_USERNAME" >> /var/www/html/.env\n\
+    fi\n\
+    if [ -n "$DB_PASSWORD" ]; then\n\
+        echo "DB_PASSWORD=$DB_PASSWORD" >> /var/www/html/.env\n\
+    fi\n\
+    \n\
+    # Extract database name\n\
+    DB_DATABASE=$(echo $DATABASE_URL | grep -oP "(?<=/)[^/?]+" || echo "")\n\
+    if [ -n "$DB_DATABASE" ]; then\n\
+        echo "DB_DATABASE=$DB_DATABASE" >> /var/www/html/.env\n\
+    fi\n\
+fi\n\
+\n\
+# Check for required folders and create if needed\n\
+mkdir -p /var/www/html/storage/framework/sessions\n\
+mkdir -p /var/www/html/storage/framework/views\n\
+mkdir -p /var/www/html/storage/framework/cache\n\
+mkdir -p /var/www/html/storage/app/public\n\
+mkdir -p /var/www/html/public/storage\n\
+\n\
+# Create a symbolic link from "public/storage" to "storage/app/public"\n\
+if [ ! -L /var/www/html/public/storage ]; then\n\
+    ln -sf /var/www/html/storage/app/public /var/www/html/public/storage\n\
+fi\n\
+\n\
+# Ensure owner, file and directory permissions are correct\n\
+chown -R www-data:www-data \\\n\
+    /var/www/html/public \\\n\
+    /var/www/html/storage\n\
+find /var/www/html/public \\\n\
+    /var/www/html/storage \\\n\
+    -type f -exec chmod 644 {} \\;\n\
+find /var/www/html/public \\\n\
+    /var/www/html/storage \\\n\
+    -type d -exec chmod 755 {} \\;\n\
+\n\
+# Setup for production\n\
+runuser -u www-data -- php /var/www/html/artisan optimize\n\
+runuser -u www-data -- php /var/www/html/artisan package:discover\n\
+\n\
+# Only run database operations if database connection is configured\n\
+if [ -n "${DATABASE_URL:-}" ] || [ -n "${DB_HOST:-}" ]; then\n\
+    echo "Running database migrations..."\n\
+    runuser -u www-data -- php /var/www/html/artisan migrate --force\n\
+    \n\
+    # Check if we need to create admin user\n\
+    if [ -n "${IN_USER_EMAIL:-}" ] && [ -n "${IN_PASSWORD:-}" ]; then\n\
+        echo "Setting up initial user account..."\n\
+        php /var/www/html/artisan db:seed --force\n\
+        php /var/www/html/artisan ninja:create-account --email "${IN_USER_EMAIL}" --password "${IN_PASSWORD}"\n\
+    fi\n\
+else\n\
+    echo "WARNING: No database configuration found. Application will not function correctly."\n\
+fi\n\
+\n\
+# Enable/disable queue worker based on QUEUE_CONNECTION\n\
+if [ "${QUEUE_CONNECTION:-sync}" = "sync" ]; then\n\
+    export QUEUE_WORKER_ENABLED=false\n\
+else\n\
+    export QUEUE_WORKER_ENABLED=true\n\
+fi\n\
+\n\
+# Start supervisor\n\
+exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf\n\
+' > /usr/local/bin/init.sh
+RUN chmod +x /usr/local/bin/init.sh
+
+# Make sure we have envsubst available
+RUN apt-get update && apt-get install -y --no-install-recommends gettext-base && rm -rf /var/lib/apt/lists/*
+
+# Default port for Render.com
+ENV PORT=8080
+
+EXPOSE ${PORT}
+
+ENTRYPOINT ["/usr/local/bin/init.sh"] 
