@@ -155,52 +155,134 @@ redirect_stderr=true\n\
 
 WORKDIR /var/www
 
-# Create a .env template - with much simpler environment variable handling
+# Create a simpler direct .env file without shell substitution for problematic fields
 RUN echo '#!/bin/bash\n\
 \n\
-# Create .env file with environment variables or defaults\n\
+# Create base .env file\n\
 cat > /var/www/html/.env << EOL\n\
 APP_URL=${APP_URL}\n\
 APP_KEY=${APP_KEY}\n\
 APP_ENV=production\n\
-APP_DEBUG=${APP_DEBUG:-false}\n\
-REQUIRE_HTTPS=${REQUIRE_HTTPS:-true}\n\
+APP_DEBUG=false\n\
+REQUIRE_HTTPS=true\n\
 PHANTOMJS_PDF_GENERATION=false\n\
-PDF_GENERATOR=${PDF_GENERATOR:-snappdf}\n\
+PDF_GENERATOR=snappdf\n\
 TRUSTED_PROXIES=*\n\
 \n\
-CACHE_DRIVER=${CACHE_DRIVER:-file}\n\
-QUEUE_CONNECTION=${QUEUE_CONNECTION:-sync}\n\
-SESSION_DRIVER=${SESSION_DRIVER:-file}\n\
+CACHE_DRIVER=file\n\
+QUEUE_CONNECTION=sync\n\
+SESSION_DRIVER=file\n\
 \n\
-REDIS_HOST=${REDIS_HOST:-redis}\n\
-REDIS_PASSWORD=${REDIS_PASSWORD:-null}\n\
-REDIS_PORT=${REDIS_PORT:-6379}\n\
+REDIS_HOST=redis\n\
+REDIS_PASSWORD=null\n\
+REDIS_PORT=6379\n\
 \n\
 FILESYSTEM_DISK=local\n\
-\n\
-DB_CONNECTION=${DB_CONNECTION}\n\
-DB_HOST=${DB_HOST}\n\
-DB_PORT=${DB_PORT}\n\
-DB_DATABASE=${DB_DATABASE}\n\
-DB_USERNAME=${DB_USERNAME}\n\
-DB_PASSWORD=${DB_PASSWORD}\n\
 \n\
 IN_USER_EMAIL=${IN_USER_EMAIL}\n\
 IN_PASSWORD=${IN_PASSWORD}\n\
 \n\
-MAIL_MAILER=${MAIL_MAILER:-log}\n\
-MAIL_HOST=${MAIL_HOST}\n\
-MAIL_PORT=${MAIL_PORT}\n\
-MAIL_USERNAME=${MAIL_USERNAME}\n\
-MAIL_PASSWORD=${MAIL_PASSWORD}\n\
-MAIL_ENCRYPTION=${MAIL_ENCRYPTION}\n\
-MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS:-user@example.com}\n\
-MAIL_FROM_NAME=${MAIL_FROM_NAME:-Invoice Ninja User}\n\
+MAIL_MAILER=log\n\
+MAIL_FROM_ADDRESS=user@example.com\n\
+MAIL_FROM_NAME=InvoiceNinjaUser\n\
 \n\
 IS_DOCKER=true\n\
 SCOUT_DRIVER=null\n\
-EOL\n' > /var/www/generate-env.sh
+EOL\n\
+\n\
+# Override with environment variables if provided\n\
+if [ -n "${APP_DEBUG}" ]; then\n\
+  sed -i "s/APP_DEBUG=false/APP_DEBUG=${APP_DEBUG}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${REQUIRE_HTTPS}" ]; then\n\
+  sed -i "s/REQUIRE_HTTPS=true/REQUIRE_HTTPS=${REQUIRE_HTTPS}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${PDF_GENERATOR}" ]; then\n\
+  sed -i "s/PDF_GENERATOR=snappdf/PDF_GENERATOR=${PDF_GENERATOR}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${CACHE_DRIVER}" ]; then\n\
+  sed -i "s/CACHE_DRIVER=file/CACHE_DRIVER=${CACHE_DRIVER}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${QUEUE_CONNECTION}" ]; then\n\
+  sed -i "s/QUEUE_CONNECTION=sync/QUEUE_CONNECTION=${QUEUE_CONNECTION}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${SESSION_DRIVER}" ]; then\n\
+  sed -i "s/SESSION_DRIVER=file/SESSION_DRIVER=${SESSION_DRIVER}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${REDIS_HOST}" ]; then\n\
+  sed -i "s/REDIS_HOST=redis/REDIS_HOST=${REDIS_HOST}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${REDIS_PASSWORD}" ]; then\n\
+  sed -i "s/REDIS_PASSWORD=null/REDIS_PASSWORD=${REDIS_PASSWORD}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${REDIS_PORT}" ]; then\n\
+  sed -i "s/REDIS_PORT=6379/REDIS_PORT=${REDIS_PORT}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${MAIL_MAILER}" ]; then\n\
+  sed -i "s/MAIL_MAILER=log/MAIL_MAILER=${MAIL_MAILER}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${MAIL_FROM_ADDRESS}" ]; then\n\
+  sed -i "s/MAIL_FROM_ADDRESS=user@example.com/MAIL_FROM_ADDRESS=${MAIL_FROM_ADDRESS}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${MAIL_FROM_NAME}" ]; then\n\
+  sed -i "s/MAIL_FROM_NAME=InvoiceNinjaUser/MAIL_FROM_NAME=${MAIL_FROM_NAME}/g" /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${DB_CONNECTION}" ]; then\n\
+  echo "DB_CONNECTION=${DB_CONNECTION}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${DB_HOST}" ]; then\n\
+  echo "DB_HOST=${DB_HOST}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${DB_PORT}" ]; then\n\
+  echo "DB_PORT=${DB_PORT}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${DB_DATABASE}" ]; then\n\
+  echo "DB_DATABASE=${DB_DATABASE}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${DB_USERNAME}" ]; then\n\
+  echo "DB_USERNAME=${DB_USERNAME}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${DB_PASSWORD}" ]; then\n\
+  echo "DB_PASSWORD=${DB_PASSWORD}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${MAIL_HOST}" ]; then\n\
+  echo "MAIL_HOST=${MAIL_HOST}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${MAIL_PORT}" ]; then\n\
+  echo "MAIL_PORT=${MAIL_PORT}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${MAIL_USERNAME}" ]; then\n\
+  echo "MAIL_USERNAME=${MAIL_USERNAME}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${MAIL_PASSWORD}" ]; then\n\
+  echo "MAIL_PASSWORD=${MAIL_PASSWORD}" >> /var/www/html/.env\n\
+fi\n\
+\n\
+if [ -n "${MAIL_ENCRYPTION}" ]; then\n\
+  echo "MAIL_ENCRYPTION=${MAIL_ENCRYPTION}" >> /var/www/html/.env\n\
+fi\n\
+' > /var/www/generate-env.sh
 RUN chmod +x /var/www/generate-env.sh
 
 # Download and setup InvoiceNinja
