@@ -171,6 +171,7 @@ DEFAULT_REDIS_PORT=6379\n\
 DEFAULT_MAIL_MAILER=log\n\
 DEFAULT_MAIL_FROM_ADDRESS=user@example.com\n\
 DEFAULT_MAIL_FROM_NAME=\"Invoice Ninja User\"\n\
+DEFAULT_DB_CONNECTION=mysql\n\
 \n\
 # Create .env file with environment variables or defaults\n\
 cat > /var/www/html/.env << EOL\n\
@@ -193,7 +194,7 @@ REDIS_PORT=${REDIS_PORT:-\$DEFAULT_REDIS_PORT}\n\
 \n\
 FILESYSTEM_DISK=local\n\
 \n\
-DB_CONNECTION=${DB_CONNECTION}\n\
+DB_CONNECTION=${DB_CONNECTION:-\$DEFAULT_DB_CONNECTION}\n\
 DB_HOST=${DB_HOST}\n\
 DB_PORT=${DB_PORT}\n\
 DB_DATABASE=${DB_DATABASE}\n\
@@ -240,47 +241,59 @@ fi\n\
 \n\
 # Parse DATABASE_URL if provided and update .env with components\n\
 if [ -n "${DATABASE_URL:-}" ]; then\n\
-    echo "Processing DATABASE_URL..."\n\
+    echo "Processing DATABASE_URL: $DATABASE_URL"\n\
+    \n\
     # Extract database type (mysql or postgres)\n\
-    DB_TYPE=$(echo $DATABASE_URL | cut -d ":" -f 1)\n\
-    if [ "$DB_TYPE" = "mysql" ]; then\n\
-        echo "DB_CONNECTION=mysql" >> /var/www/html/.env\n\
-    elif [ "$DB_TYPE" = "postgresql" ]; then\n\
-        echo "DB_CONNECTION=pgsql" >> /var/www/html/.env\n\
+    if echo "$DATABASE_URL" | grep -q "^mysql://"; then\n\
+        echo "Setting MySQL connection..."\n\
+        sed -i "s/^DB_CONNECTION=.*/DB_CONNECTION=mysql/" /var/www/html/.env\n\
+        DEFAULT_PORT=3306\n\
+    elif echo "$DATABASE_URL" | grep -q "^postgres://\\|^postgresql://"; then\n\
+        echo "Setting PostgreSQL connection..."\n\
+        sed -i "s/^DB_CONNECTION=.*/DB_CONNECTION=pgsql/" /var/www/html/.env\n\
+        DEFAULT_PORT=5432\n\
+    else\n\
+        echo "WARNING: Unknown database type in DATABASE_URL. Must start with mysql:// or postgresql://."\n\
+        exit 1\n\
     fi\n\
     \n\
-    # Extract host and port\n\
-    DB_HOST=$(echo $DATABASE_URL | grep -oP "(?<=@).*?(?=:)" || echo $DATABASE_URL | grep -oP "(?<=@).*?(?=/)")\n\
-    DB_PORT=$(echo $DATABASE_URL | grep -oP "(?<=@$DB_HOST:)\\d+" || echo "")\n\
-    if [ -n "$DB_HOST" ]; then\n\
-        echo "DB_HOST=$DB_HOST" >> /var/www/html/.env\n\
-    fi\n\
-    if [ -n "$DB_PORT" ]; then\n\
-        echo "DB_PORT=$DB_PORT" >> /var/www/html/.env\n\
-    else\n\
-        if [ "$DB_TYPE" = "mysql" ]; then\n\
-            echo "DB_PORT=3306" >> /var/www/html/.env\n\
-        elif [ "$DB_TYPE" = "postgresql" ]; then\n\
-            echo "DB_PORT=5432" >> /var/www/html/.env\n\
-        fi\n\
-    fi\n\
+    # Extract credentials, host, port and database name\n\
+    # Format: protocol://username:password@host:port/database\n\
     \n\
     # Extract username and password\n\
-    DB_USERPASS=$(echo $DATABASE_URL | grep -oP "(?<=://).*?(?=@)")\n\
-    DB_USERNAME=$(echo $DB_USERPASS | grep -oP "^.*?(?=:)" || echo "")\n\
-    DB_PASSWORD=$(echo $DB_USERPASS | grep -oP "(?<=:).*$" || echo "")\n\
-    if [ -n "$DB_USERNAME" ]; then\n\
-        echo "DB_USERNAME=$DB_USERNAME" >> /var/www/html/.env\n\
-    fi\n\
-    if [ -n "$DB_PASSWORD" ]; then\n\
-        echo "DB_PASSWORD=$DB_PASSWORD" >> /var/www/html/.env\n\
+    AUTH_PART=$(echo "$DATABASE_URL" | sed -E "s|^.*://([^@]+)@.*$|\\1|")\n\
+    DB_USERNAME=$(echo "$AUTH_PART" | cut -d ":" -f 1)\n\
+    DB_PASSWORD=$(echo "$AUTH_PART" | cut -d ":" -f 2-)\n\
+    \n\
+    # Extract host, port, and database\n\
+    HOST_DB_PART=$(echo "$DATABASE_URL" | sed -E "s|^.*://[^@]+@([^?]+).*$|\\1|")\n\
+    \n\
+    # Check if port is specified\n\
+    if echo "$HOST_DB_PART" | grep -q ":"; then\n\
+        DB_HOST=$(echo "$HOST_DB_PART" | cut -d ":" -f 1)\n\
+        REMAINING=$(echo "$HOST_DB_PART" | cut -d ":" -f 2-)\n\
+        DB_PORT=$(echo "$REMAINING" | cut -d "/" -f 1)\n\
+        DB_DATABASE=$(echo "$REMAINING" | cut -d "/" -f 2-)\n\
+    else\n\
+        DB_HOST=$(echo "$HOST_DB_PART" | cut -d "/" -f 1)\n\
+        DB_PORT=$DEFAULT_PORT\n\
+        DB_DATABASE=$(echo "$HOST_DB_PART" | cut -d "/" -f 2-)\n\
     fi\n\
     \n\
-    # Extract database name\n\
-    DB_DATABASE=$(echo $DATABASE_URL | grep -oP "(?<=/)[^/?]+" || echo "")\n\
-    if [ -n "$DB_DATABASE" ]; then\n\
-        echo "DB_DATABASE=$DB_DATABASE" >> /var/www/html/.env\n\
-    fi\n\
+    # Update .env file\n\
+    sed -i "s/^DB_HOST=.*/DB_HOST=$DB_HOST/" /var/www/html/.env\n\
+    sed -i "s/^DB_PORT=.*/DB_PORT=$DB_PORT/" /var/www/html/.env\n\
+    sed -i "s/^DB_DATABASE=.*/DB_DATABASE=$DB_DATABASE/" /var/www/html/.env\n\
+    sed -i "s/^DB_USERNAME=.*/DB_USERNAME=$DB_USERNAME/" /var/www/html/.env\n\
+    sed -i "s/^DB_PASSWORD=.*/DB_PASSWORD=$DB_PASSWORD/" /var/www/html/.env\n\
+    \n\
+    echo "Database configuration:"\n\
+    echo " - Connection: $(grep DB_CONNECTION /var/www/html/.env | cut -d "=" -f 2)"\n\
+    echo " - Host: $DB_HOST"\n\
+    echo " - Port: $DB_PORT"\n\
+    echo " - Database: $DB_DATABASE"\n\
+    echo " - Username: $DB_USERNAME"\n\
+    echo " - Password: (hidden)"\n\
 fi\n\
 \n\
 # Check for required folders and create if needed\n\
@@ -306,12 +319,16 @@ find /var/www/html/public \\\n\
     /var/www/html/storage \\\n\
     -type d -exec chmod 755 {} \\;\n\
 \n\
+# Display the final .env file for debugging\n\
+echo "Final .env file:"\n\
+grep "^DB_" /var/www/html/.env\n\
+\n\
 # Setup for production\n\
 runuser -u www-data -- php /var/www/html/artisan optimize\n\
 runuser -u www-data -- php /var/www/html/artisan package:discover\n\
 \n\
 # Only run database operations if database connection is configured\n\
-if [ -n "${DATABASE_URL:-}" ] || [ -n "${DB_HOST:-}" ]; then\n\
+if grep -q "^DB_CONNECTION=" /var/www/html/.env && grep -q "^DB_HOST=" /var/www/html/.env; then\n\
     echo "Running database migrations..."\n\
     runuser -u www-data -- php /var/www/html/artisan migrate --force\n\
     \n\
