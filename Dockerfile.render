@@ -297,6 +297,14 @@ if [ -n "${DATABASE_URL:-}" ]; then\n\
     echo " - Database: $DB_DATABASE"\n\
     echo " - Username: $DB_USERNAME"\n\
     echo " - Password: (hidden)"\n\
+    \n\
+    # Export these for other scripts\n\
+    export DB_CONNECTION=$(grep DB_CONNECTION /var/www/html/.env | cut -d "=" -f 2)\n\
+    export DB_HOST=$DB_HOST\n\
+    export DB_PORT=$DB_PORT\n\
+    export DB_DATABASE=$DB_DATABASE\n\
+    export DB_USERNAME=$DB_USERNAME\n\
+    export DB_PASSWORD=$DB_PASSWORD\n\
 fi\n\
 \n\
 # Check for required folders and create if needed\n\
@@ -323,7 +331,7 @@ find /var/www/html/public \\\n\
     -type d -exec chmod 755 {} \\;\n\
 \n\
 # Display the final .env file for debugging\n\
-echo "Final .env file:"\n\
+echo "Final .env file database configuration:"\n\
 grep "^DB_" /var/www/html/.env\n\
 \n\
 # Setup for production\n\
@@ -338,16 +346,35 @@ fi\n\
 \n\
 if grep -q "^DB_CONNECTION=" /var/www/html/.env && grep -q "^DB_HOST=" /var/www/html/.env; then\n\
     echo "Running database migrations..."\n\
-    # First attempt the migration\n\
+    \n\
+    # For PostgreSQL, try to fix the common column issue first\n\
+    if [ "$IS_POSTGRES" = "true" ]; then\n\
+        echo "PostgreSQL detected, running pre-migration fix..."\n\
+        # Run our PostgreSQL fix script\n\
+        php /var/www/pgsql_migration_fix.php || echo "Pre-migration fix failed, continuing anyway"\n\
+    fi\n\
+    \n\
+    # Try running the migrations\n\
     if ! runuser -u www-data -- php /var/www/html/artisan migrate --force; then\n\
         if [ "$IS_POSTGRES" = "true" ]; then\n\
-            echo "Migration failed. Attempting PostgreSQL specific fix..."\n\
-            # Run our PostgreSQL fix script\n\
-            php /var/www/pgsql_migration_fix.php\n\
-            # Try migration again, skipping the problematic migration\n\
-            runuser -u www-data -- php /var/www/html/artisan migrate:refresh --force || true\n\
+            echo "Migration failed. Attempting recovery..."\n\
+            # Try migration again but skip the problematic one\n\
+            php /var/www/html/artisan migrate:refresh --force || true\n\
+            \n\
+            # Direct SQL fix as a last resort\n\
+            echo "Applying direct SQL fix..."\n\
+            DB_CONNECTION=$(grep "^DB_CONNECTION=" /var/www/html/.env | cut -d "=" -f 2)\n\
+            DB_HOST=$(grep "^DB_HOST=" /var/www/html/.env | cut -d "=" -f 2)\n\
+            DB_PORT=$(grep "^DB_PORT=" /var/www/html/.env | cut -d "=" -f 2)\n\
+            DB_DATABASE=$(grep "^DB_DATABASE=" /var/www/html/.env | cut -d "=" -f 2)\n\
+            DB_USERNAME=$(grep "^DB_USERNAME=" /var/www/html/.env | cut -d "=" -f 2)\n\
+            DB_PASSWORD=$(grep "^DB_PASSWORD=" /var/www/html/.env | cut -d "=" -f 2)\n\
+            \n\
+            # Use PSQL CLI for direct SQL execution\n\
+            export PGPASSWORD="$DB_PASSWORD"\n\
+            psql -U "$DB_USERNAME" -h "$DB_HOST" -p "$DB_PORT" -d "$DB_DATABASE" -c "ALTER TABLE IF EXISTS companies ALTER COLUMN enabled_expense_tax_rates TYPE integer USING CASE WHEN enabled_expense_tax_rates = '\''true'\'' THEN 1 WHEN enabled_expense_tax_rates = '\''false'\'' THEN 0 ELSE enabled_expense_tax_rates::integer END, ALTER COLUMN enabled_expense_tax_rates SET NOT NULL, ALTER COLUMN enabled_expense_tax_rates SET DEFAULT 0;" || true\n\
         else\n\
-            echo "Migration failed but not using PostgreSQL. Cannot apply automatic fix."\n\
+            echo "Migration failed and not using PostgreSQL. Cannot apply automatic fix."\n\
             exit 1\n\
         fi\n\
     fi\n\
@@ -374,8 +401,8 @@ exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf\n\
 ' > /usr/local/bin/init.sh
 RUN chmod +x /usr/local/bin/init.sh
 
-# Make sure we have envsubst available
-RUN apt-get update && apt-get install -y --no-install-recommends gettext-base && rm -rf /var/lib/apt/lists/*
+# Install additional tools required for PostgreSQL fixes
+RUN apt-get update && apt-get install -y --no-install-recommends gettext-base postgresql-client && rm -rf /var/lib/apt/lists/*
 
 # Default port for Render.com
 ENV PORT=8080
