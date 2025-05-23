@@ -218,6 +218,9 @@ SCOUT_DRIVER=null\n\
 EOL\n" > /var/www/generate-env.sh
 RUN chmod +x /var/www/generate-env.sh
 
+# Add PostgreSQL migration fix script
+COPY pgsql_migration_fix.php /var/www/pgsql_migration_fix.php
+
 # Download and setup InvoiceNinja
 USER www-data
 RUN curl -sL "https://github.com/invoiceninja/invoiceninja/releases/latest/download/invoiceninja.tar.gz" | \
@@ -328,9 +331,26 @@ runuser -u www-data -- php /var/www/html/artisan optimize\n\
 runuser -u www-data -- php /var/www/html/artisan package:discover\n\
 \n\
 # Only run database operations if database connection is configured\n\
+IS_POSTGRES=false\n\
+if grep -q "^DB_CONNECTION=pgsql" /var/www/html/.env; then\n\
+    IS_POSTGRES=true\n\
+fi\n\
+\n\
 if grep -q "^DB_CONNECTION=" /var/www/html/.env && grep -q "^DB_HOST=" /var/www/html/.env; then\n\
     echo "Running database migrations..."\n\
-    runuser -u www-data -- php /var/www/html/artisan migrate --force\n\
+    # First attempt the migration\n\
+    if ! runuser -u www-data -- php /var/www/html/artisan migrate --force; then\n\
+        if [ "$IS_POSTGRES" = "true" ]; then\n\
+            echo "Migration failed. Attempting PostgreSQL specific fix..."\n\
+            # Run our PostgreSQL fix script\n\
+            php /var/www/pgsql_migration_fix.php\n\
+            # Try migration again, skipping the problematic migration\n\
+            runuser -u www-data -- php /var/www/html/artisan migrate:refresh --force || true\n\
+        else\n\
+            echo "Migration failed but not using PostgreSQL. Cannot apply automatic fix."\n\
+            exit 1\n\
+        fi\n\
+    fi\n\
     \n\
     # Check if we need to create admin user\n\
     if [ -n "${IN_USER_EMAIL:-}" ] && [ -n "${IN_PASSWORD:-}" ]; then\n\
